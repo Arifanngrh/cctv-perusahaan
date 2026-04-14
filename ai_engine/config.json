@@ -1,0 +1,9 @@
+{
+  "cameras": [
+    {
+      "name": "Camera 01",
+      "rtsp": "rtsp://admin:indokarya2@200.192.100.142:554/Streaming/Channels/102",
+      "line": 300
+    }
+  ]
+}
