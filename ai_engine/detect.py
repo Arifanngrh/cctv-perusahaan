@@ -76,9 +76,11 @@ def run_camera(camera):
     print("🚀 START CAMERA:", NAME)
 
     model = YOLO("yolo11n.pt")
+    helmet_model = YOLO("helmet.pt")
 
     try:
         model.to("cuda")
+        helmet_model.to("cuda")
         print("⚡ GPU")
     except:
         print("🐢 CPU")
@@ -93,6 +95,9 @@ def run_camera(camera):
 
     last_sent_in = -1
     last_sent_out = -1
+    
+    helmet_count = 0
+    no_helmet_count = 0
 
     history = {}
     track_time = {}
@@ -177,6 +182,26 @@ def run_camera(camera):
 
                 tid = int(tid)
                 x1, y1, x2, y2 = map(int, box)
+                
+                person_crop = frame[y1:y2, x1:x2]
+
+                helmet_detected = False
+
+                try:
+                    results_helmet = helmet_model(person_crop, conf=0.3)
+
+                    for r in results_helmet:
+                        for c in r.boxes.cls:
+                            if int(c) == 0:  # class 0 = helmet
+                                helmet_detected = True
+
+                except:
+                    pass
+                
+                if helmet_detected:
+                    helmet_count += 1
+                else:
+                    no_helmet_count += 1
 
                 if (x2 - x1) < 50:
                     continue
@@ -271,19 +296,23 @@ def run_camera(camera):
 
             if IN != last_sent_in or OUT != last_sent_out:
                 try:
-                    session.post(API_URL, json={
+                    res = session.post(API_URL, json={
                         "camera": NAME,
                         "people_in": IN,
-                        "people_out": OUT
-                    }, timeout=1)
+                        "people_out": OUT,
+                        "helmet": helmet_count,
+                        "no_helmet": no_helmet_count
+                    }, timeout=5)
 
                     print("📊 SENT:", IN, OUT)
+                    print("STATUS:", res.status_code)
+                    print("RESP:", res.text)
 
                     last_sent_in = IN
                     last_sent_out = OUT
 
-                except:
-                    pass
+                except Exception as e:
+                    print("❌ API ERROR:", e)
 
             last_api = now
 
