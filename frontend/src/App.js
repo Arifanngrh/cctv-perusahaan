@@ -5,7 +5,7 @@ import CCTV from "./pages/CCTV";
 function App() {
   return (
     <BrowserRouter>
-      <div style={{ background: "#020617", minHeight: "100vh" }}>
+      <div style={{ background: "#607aee", minHeight: "100vh" }}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/cctv" element={<CCTV />} />
