@@ -12,7 +12,12 @@ function CCTV() {
     no_helmet: 0,
   });
 
-  // FETCH COUNTER
+  const [linePosition, setLinePosition] = useState(50);
+  const [direction, setDirection] = useState("NORMAL");
+
+  // =============================
+  // FETCH COUNTER (REALTIME)
+  // =============================
   useEffect(() => {
     const t = setInterval(() => {
       fetch("http://127.0.0.1:8000/summary")
@@ -31,6 +36,65 @@ function CCTV() {
     return () => clearInterval(t);
   }, []);
 
+  // =============================
+  // FETCH CONFIG AWAL (SYNC)
+  // =============================
+  useEffect(() => {
+    // line
+    fetch(`http://127.0.0.1:8000/line/${CAMERA_URL}`)
+      .then((r) => r.json())
+      .then((j) => {
+        setLinePosition((j.position || 0.5) * 100);
+      })
+      .catch(() => {});
+
+    // direction
+    fetch(`http://127.0.0.1:8000/direction/${CAMERA_URL}`)
+      .then((r) => r.json())
+      .then((j) => {
+        setDirection(j.mode || "NORMAL");
+      })
+      .catch(() => {});
+  }, []);
+
+  // =============================
+  // SEND LINE (DEBOUNCE)
+  // =============================
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      fetch(`http://127.0.0.1:8000/line/${CAMERA_URL}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          position: linePosition / 100,
+        }),
+      }).catch(() => {});
+    }, 200);
+
+    return () => clearTimeout(timeout);
+  }, [linePosition]);
+
+  // =============================
+  // HANDLE DIRECTION (INSTANT)
+  // =============================
+  const toggleDirection = () => {
+    const newDir = direction === "NORMAL" ? "REVERSE" : "NORMAL";
+
+    setDirection(newDir);
+
+    fetch(`http://127.0.0.1:8000/direction/${CAMERA_URL}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        mode: newDir,
+      }),
+    }).catch(() => {});
+  };
+
   return (
     <div style={wrapper}>
       <h1 style={{ textAlign: "center" }}>📷 CCTV</h1>
@@ -42,24 +106,34 @@ function CCTV() {
       </div>
 
       {/* CCTV */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          marginBottom: "30px",
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "center" }}>
         <img
           src={`http://127.0.0.1:8000/stream/${CAMERA_URL}`}
           alt="CCTV"
-          style={{
-            width: "900px",
-            borderRadius: "12px",
-          }}
+          style={{ width: "900px", borderRadius: "12px" }}
         />
       </div>
 
-      {/* BOX DI BAWAH CCTV */}
+      {/* CONTROL BOX */}
+      <div style={controlBox}>
+        <h4>Line Position</h4>
+
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={linePosition}
+          onChange={(e) => setLinePosition(Number(e.target.value))}
+        />
+
+        <p>{linePosition}%</p>
+
+        <button style={directionBtn} onClick={toggleDirection}>
+          {direction}
+        </button>
+      </div>
+
+      {/* DATA BOX */}
       <div style={boxContainer}>
         <div style={box}>
           IN<h1>{data.in}</h1>
@@ -78,7 +152,7 @@ function CCTV() {
   );
 }
 
-// STYLE
+// =============================
 const wrapper = {
   minHeight: "100vh",
   background: "#020617",
@@ -86,11 +160,29 @@ const wrapper = {
   padding: "30px",
 };
 
+const controlBox = {
+  position: "fixed",
+  bottom: "20px",
+  right: "20px",
+  background: "#0f172a",
+  padding: "15px",
+  borderRadius: "12px",
+};
+
+const directionBtn = {
+  padding: "8px",
+  background: "#22c55e",
+  border: "none",
+  borderRadius: "8px",
+  color: "white",
+  cursor: "pointer",
+};
+
 const boxContainer = {
   display: "flex",
   justifyContent: "center",
   gap: "20px",
-  flexWrap: "wrap",
+  marginTop: "30px",
 };
 
 const box = {
@@ -107,7 +199,6 @@ const btn = {
   border: "none",
   borderRadius: "8px",
   color: "white",
-  cursor: "pointer",
 };
 
 export default CCTV;

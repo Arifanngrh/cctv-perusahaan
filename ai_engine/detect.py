@@ -12,68 +12,45 @@ from urllib.parse import quote
 API_URL = "http://127.0.0.1:8000/counter"
 STREAM_URL = "http://127.0.0.1:8000/frame"
 
-# =============================
-# SHUTDOWN
-# =============================
 def shutdown(sig, frame):
-    print("🛑 Stopping AI Engine...")
+    print("🛑 STOP AI")
     sys.exit(0)
 
 signal.signal(signal.SIGINT, shutdown)
-signal.signal(signal.SIGTERM, shutdown)
 
 # =============================
-# CAMERA READER
+# CAMERA READER (ANTI DELAY)
 # =============================
 class CameraReader:
     def __init__(self, rtsp):
-        self.rtsp = rtsp
-        self.cap = None
+        self.cap = cv2.VideoCapture(rtsp)
         self.frame = None
-        self.running = True
-
-        self.connect()
         threading.Thread(target=self.update, daemon=True).start()
 
-    def connect(self):
-        if self.cap:
-            self.cap.release()
-
-        print("🔄 CONNECTING RTSP...")
-        self.cap = cv2.VideoCapture(self.rtsp)
-
-        if self.cap.isOpened():
-            print("✅ RTSP CONNECTED")
-        else:
-            print("❌ RTSP FAILED")
-
     def update(self):
-        while self.running:
+        while True:
             if not self.cap.isOpened():
-                self.connect()
-                time.sleep(2)
+                self.cap.open(self.cap)
+                time.sleep(1)
                 continue
 
             ret, frame = self.cap.read()
-
-            if not ret:
-                self.connect()
-                continue
-
-            self.frame = frame
+            if ret:
+                self.frame = frame
 
     def get(self):
         return self.frame
 
+
 # =============================
-# MAIN PROCESS
+# MAIN
 # =============================
 def run_camera(camera):
 
     NAME = camera["name"]
     RTSP = camera["rtsp"]
 
-    print("🚀 START CAMERA:", NAME)
+    print("🚀 START:", NAME)
 
     model = YOLO("yolo11n.pt")
     helmet_model = YOLO("helmet.pt")
@@ -90,33 +67,23 @@ def run_camera(camera):
     reader = CameraReader(RTSP)
     session = requests.Session()
 
-    IN = 0
-    OUT = 0
-
-    last_sent_in = -1
-    last_sent_out = -1
-    
-    helmet_count = 0
-    no_helmet_count = 0
+    IN, OUT = 0, 0
+    helmet_count, no_helmet_count = 0, 0
 
     history = {}
     track_time = {}
+    helmet_history = {}
 
-    TIMEOUT = 5
-    OFFSET = 30   # 🔥 FIX (lebih kecil)
-    COOLDOWN = 2
-    GLOBAL_COOLDOWN = 0.3
+    TIMEOUT = 4
+    OFFSET = 8              # 🔥 lebih stabil crossing
+    COOLDOWN = 0.5
 
-    last_count_time = {}
-    last_global_time = 0
+    line_position = 0.5
+    direction = "NORMAL"
 
-    last_api = 0
+    last_fetch = 0
     last_frame = 0
-    last_line_fetch = 0
-    last_direction_fetch = 0
-
-    line_position = 0.65
-    direction_mode = "NORMAL"
+    last_api = 0
 
     while True:
 
@@ -124,7 +91,7 @@ def run_camera(camera):
         frame = reader.get()
 
         if frame is None:
-            time.sleep(0.05)
+            time.sleep(0.01)
             continue
 
         frame = cv2.resize(frame, (640, 360))
@@ -133,29 +100,33 @@ def run_camera(camera):
         cam = quote(NAME)
 
         # =============================
-        # GET SETTING
+        # FETCH CONFIG
         # =============================
-        if now - last_line_fetch > 1:
+        if now - last_fetch > 0.2:
             try:
-                r = session.get(f"http://127.0.0.1:8000/line/{cam}", timeout=1)
-                line_position = r.json().get("position", 0.65)
-            except:
-                pass
-            last_line_fetch = now
+                line_position = session.get(
+                    f"http://127.0.0.1:8000/line/{cam}", timeout=1
+                ).json().get("position", 0.5)
 
-        if now - last_direction_fetch > 1:
-            try:
-                r = session.get(f"http://127.0.0.1:8000/direction/{cam}", timeout=1)
-                direction_mode = r.json().get("mode", "NORMAL").upper()
+                direction = session.get(
+                    f"http://127.0.0.1:8000/direction/{cam}", timeout=1
+                ).json().get("mode", "NORMAL")
+
+                direction = direction.upper()
+                if direction not in ["NORMAL", "REVERSE"]:
+                    direction = "NORMAL"
+
             except:
                 pass
-            last_direction_fetch = now
+
+            last_fetch = now
 
         line_x = int(w * line_position)
+
         cv2.line(frame, (line_x, 0), (line_x, h), (0, 0, 255), 2)
 
         # =============================
-        # YOLO TRACK
+        # TRACK
         # =============================
         try:
             results = model.track(
@@ -176,162 +147,123 @@ def run_camera(camera):
 
             for box, tid, cls in zip(boxes, ids, classes):
 
-                # 🔥 FILTER cuma manusia
                 if int(cls) != 0:
                     continue
 
                 tid = int(tid)
                 x1, y1, x2, y2 = map(int, box)
-                
-                person_crop = frame[y1:y2, x1:x2]
 
-                helmet_detected = False
-
-                try:
-                    results_helmet = helmet_model(person_crop, conf=0.3)
-
-                    for r in results_helmet:
-                        for c in r.boxes.cls:
-                            if int(c) == 0:  # class 0 = helmet
-                                helmet_detected = True
-
-                except:
-                    pass
-                
-                if helmet_detected:
-                    helmet_count += 1
-                else:
-                    no_helmet_count += 1
-
-                if (x2 - x1) < 50:
+                if (x2 - x1) < 40:
                     continue
 
                 cx = (x1 + x2) // 2
-
                 track_time[tid] = now
 
                 # =============================
-                # ZONE DETECTION
+                # HELMET (1x per object)
+                # =============================
+                if tid not in helmet_history:
+                    crop = frame[y1:y2, x1:x2]
+                    helmet = False
+
+                    try:
+                        res = helmet_model(crop, conf=0.3)
+                        for r in res:
+                            for c in r.boxes.cls:
+                                if int(c) == 0:
+                                    helmet = True
+                    except:
+                        pass
+
+                    if helmet:
+                        helmet_count += 1
+                    else:
+                        no_helmet_count += 1
+
+                    helmet_history[tid] = True
+
+                # =============================
+                # ZONE
                 # =============================
                 if cx < line_x - OFFSET:
                     zone = "LEFT"
                 elif cx > line_x + OFFSET:
                     zone = "RIGHT"
                 else:
-                    zone = "MIDDLE"
+                    zone = "MID"
 
                 if tid not in history:
-                    history[tid] = {
-                        "zone": zone,
-                        "counted": False
-                    }
+                    history[tid] = {"zone": zone}
                     continue
 
-                prev_zone = history[tid]["zone"]
-
-                # 🔥 WAJIB UPDATE ZONE DULU
+                prev = history[tid]["zone"]
                 history[tid]["zone"] = zone
 
-                if history[tid]["counted"]:
-                    continue
-
-                # skip middle tapi tetap update
-                if zone == "MIDDLE":
-                    continue
-
-                # cooldown per object
-                if tid in last_count_time and now - last_count_time[tid] < COOLDOWN:
-                    continue
-
-                # global cooldown
-                if now - last_global_time < GLOBAL_COOLDOWN:
-                    continue
-
                 # =============================
-                # CROSSING FIXED
+                # CROSSING (ANTI MISS)
                 # =============================
-                if prev_zone in ["LEFT", "MIDDLE"] and zone == "RIGHT":
+                if prev == "LEFT" and zone == "RIGHT":
 
-                    if direction_mode == "NORMAL":
+                    if direction == "NORMAL":
                         OUT += 1
-                        print("➡️ OUT:", OUT)
+                        print("➡️ OUT", OUT)
                     else:
                         IN += 1
-                        print("⬅️ IN:", IN)
+                        print("⬅️ IN", IN)
 
-                    history[tid]["counted"] = True
-                    last_count_time[tid] = now
-                    last_global_time = now
+                elif prev == "RIGHT" and zone == "LEFT":
 
-                elif prev_zone in ["RIGHT", "MIDDLE"] and zone == "LEFT":
-
-                    if direction_mode == "NORMAL":
+                    if direction == "NORMAL":
                         IN += 1
-                        print("⬅️ IN:", IN)
+                        print("⬅️ IN", IN)
                     else:
                         OUT += 1
-                        print("➡️ OUT:", OUT)
+                        print("➡️ OUT", OUT)
 
-                    history[tid]["counted"] = True
-                    last_count_time[tid] = now
-                    last_global_time = now
-
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
-                cv2.putText(frame, f"ID {tid}", (x1, y1-5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+                cv2.rectangle(frame, (x1,y1),(x2,y2),(0,255,0),2)
 
         # =============================
         # CLEAN MEMORY
         # =============================
-        expired = [tid for tid, t in track_time.items() if now - t > TIMEOUT]
+        expired = [tid for tid,t in track_time.items() if now-t > TIMEOUT]
         for tid in expired:
             history.pop(tid, None)
             track_time.pop(tid, None)
-            last_count_time.pop(tid, None)
+            helmet_history.pop(tid, None)
 
         # =============================
         # SEND API
         # =============================
         if now - last_api > 1:
-
-            if IN != last_sent_in or OUT != last_sent_out:
-                try:
-                    res = session.post(API_URL, json={
-                        "camera": NAME,
-                        "people_in": IN,
-                        "people_out": OUT,
-                        "helmet": helmet_count,
-                        "no_helmet": no_helmet_count
-                    }, timeout=5)
-
-                    print("📊 SENT:", IN, OUT)
-                    print("STATUS:", res.status_code)
-                    print("RESP:", res.text)
-
-                    last_sent_in = IN
-                    last_sent_out = OUT
-
-                except Exception as e:
-                    print("❌ API ERROR:", e)
+            try:
+                session.post(API_URL, json={
+                    "camera": NAME,
+                    "people_in": IN,
+                    "people_out": OUT,
+                    "helmet": helmet_count,
+                    "no_helmet": no_helmet_count
+                }, timeout=2)
+            except:
+                pass
 
             last_api = now
 
         # =============================
         # STREAM
         # =============================
-        if now - last_frame > 0.2:
+        if now - last_frame > 0.05:
             try:
-                ret, jpg = cv2.imencode(".jpg", frame)
-                if ret:
-                    session.post(
-                        f"{STREAM_URL}/{cam}",
-                        files={"file": ("frame.jpg", jpg.tobytes(), "image/jpeg")},
-                        timeout=1
-                    )
+                _, jpg = cv2.imencode(".jpg", frame)
+                session.post(
+                    f"{STREAM_URL}/{cam}",
+                    files={"file": ("f.jpg", jpg.tobytes())},
+                    timeout=1
+                )
             except:
                 pass
 
             last_frame = now
+
 
 # =============================
 # MAIN
@@ -343,12 +275,5 @@ if __name__ == "__main__":
     with open("config.json") as f:
         config = json.load(f)
 
-    processes = []
-
     for cam in config["cameras"]:
-        p = multiprocessing.Process(target=run_camera, args=(cam,))
-        p.start()
-        processes.append(p)
-
-    for p in processes:
-        p.join()
+        multiprocessing.Process(target=run_camera, args=(cam,)).start()
