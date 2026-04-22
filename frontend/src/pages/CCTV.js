@@ -214,12 +214,12 @@ const videoContainer = {
   borderRadius: "12px",
   border: "1px solid #1e293b",
   width: "100%",
-  maxWidth: "500px",
+  maxWidth: "1200px",
 };
 
 const video = {
   width: "100%",
-  maxWidth: "900px",
+  maxWidth: "900  px",
   borderRadius: "8px",
 };
 

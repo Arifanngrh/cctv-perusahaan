@@ -1,11 +1,9 @@
 import threading
 import asyncio
-import sqlite3
+import psycopg2
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from datetime import date, datetime
 from urllib.parse import unquote
 
 app = FastAPI()
@@ -21,31 +19,20 @@ app.add_middleware(
 )
 
 # =========================
-# DATABASE (ANTI LOCK FIX)
+# DATABASE (POSTGRESQL)
 # =========================
-conn = sqlite3.connect("cctv.db", check_same_thread=False)
-conn.execute("PRAGMA journal_mode=WAL;")  # 🔥 anti lock
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS stats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    camera TEXT,
-    date TEXT,
-    people_in INTEGER,
-    people_out INTEGER,
-    helmet INTEGER,
-    no_helmet INTEGER
-)
-""")
-conn.commit()
+def get_conn():
+    return psycopg2.connect(
+        host="127.0.0.1",
+        database="cctv_db",
+        user="postgres",
+        password="rynnn28",
+        port="5432"
+    )
 
 # =========================
-# MEMORY (REALTIME)
+# MEMORY (CONFIG + STREAM)
 # =========================
-camera_totals = {}
-last_date = date.today()
-
 line_settings = {}
 direction_settings = {}
 
@@ -58,120 +45,78 @@ def get_lock(cam):
     return locks[cam]
 
 # =========================
-# MODEL
-# =========================
-class Counter(BaseModel):
-    camera: str
-    people_in: int
-    people_out: int
-    helmet: int
-    no_helmet: int
-
-# =========================
-# COUNTER (REALTIME + DB)
-# =========================
-@app.post("/counter")
-def save(data: Counter):
-    global last_date
-
-    today = date.today()
-    today_str = datetime.now().strftime("%Y-%m-%d")
-
-    # reset realtime tiap hari
-    if today != last_date:
-        camera_totals.clear()
-        last_date = today
-
-    # =====================
-    # REALTIME
-    # =====================
-    camera_totals[data.camera] = {
-        "in": data.people_in,
-        "out": data.people_out,
-        "helmet": data.helmet,
-        "no_helmet": data.no_helmet
-    }
-
-    # =====================
-    # DATABASE (UPSERT)
-    # =====================
-    try:
-        cursor.execute("""
-        SELECT id FROM stats WHERE camera=? AND date=?
-        """, (data.camera, today_str))
-
-        row = cursor.fetchone()
-
-        if row:
-            cursor.execute("""
-            UPDATE stats SET
-            people_in=?,
-            people_out=?,
-            helmet=?,
-            no_helmet=?
-            WHERE id=?
-            """, (
-                data.people_in,
-                data.people_out,
-                data.helmet,
-                data.no_helmet,
-                row[0]
-            ))
-        else:
-            cursor.execute("""
-            INSERT INTO stats (camera, date, people_in, people_out, helmet, no_helmet)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                data.camera,
-                today_str,
-                data.people_in,
-                data.people_out,
-                data.helmet,
-                data.no_helmet
-            ))
-
-        conn.commit()
-
-    except Exception as e:
-        print("❌ DB ERROR:", e)
-
-    return {"ok": True}
-
-# =========================
-# SUMMARY (REALTIME)
+# SUMMARY (REAL DB)
 # =========================
 @app.get("/summary")
 def summary():
-    return {
-        "total_in": sum(c["in"] for c in camera_totals.values()),
-        "total_out": sum(c["out"] for c in camera_totals.values()),
-        "total_helmet": sum(c["helmet"] for c in camera_totals.values()),
-        "total_no_helmet": sum(c["no_helmet"] for c in camera_totals.values()),
-        "current_inside": sum(c["in"] for c in camera_totals.values()) - sum(c["out"] for c in camera_totals.values())
-    }
+    try:
+        conn = get_conn()
+        cursor = conn.cursor()
+
+        # IN / OUT
+        cursor.execute("""
+        SELECT 
+            COALESCE(SUM(total_in),0),
+            COALESCE(SUM(total_out),0)
+        FROM daily_counter
+        WHERE counter_date = CURRENT_DATE
+        """)
+        result = cursor.fetchone()
+
+        # HELMET
+        cursor.execute("""
+        SELECT
+            SUM(CASE WHEN label = 'helmet' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN label = 'no_helmet' THEN 1 ELSE 0 END)
+        FROM detections
+        WHERE DATE(created_at) = CURRENT_DATE
+        """)
+        helmet = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "total_in": result[0],
+            "total_out": result[1],
+            "total_helmet": helmet[0] or 0,
+            "total_no_helmet": helmet[1] or 0,
+            "current_inside": result[0] - result[1]
+        }
+
+    except Exception as e:
+        print("❌ SUMMARY ERROR:", e)
+        return {}
 
 # =========================
-# STATS (DASHBOARD)
+# STATS (PER HARI)
 # =========================
 @app.get("/stats")
 def stats():
     try:
+        conn = get_conn()
+        cursor = conn.cursor()
+
         cursor.execute("""
-        SELECT date,
-               SUM(people_in),
-               SUM(people_out),
-               SUM(helmet),
-               SUM(no_helmet)
-        FROM stats
-        GROUP BY date
-        ORDER BY date
+        SELECT 
+            DATE(created_at),
+            SUM(CASE WHEN direction = 'IN' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN direction = 'OUT' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN label = 'helmet' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN label = 'no_helmet' THEN 1 ELSE 0 END)
+        FROM detections
+        GROUP BY DATE(created_at)
+        ORDER BY DATE(created_at)
         """)
 
         rows = cursor.fetchall()
 
+        cursor.close()
+        conn.close()
+
         return [
             {
-                "date": r[0],
+                "date": str(r[0]),
                 "in": r[1],
                 "out": r[2],
                 "helmet": r[3],
@@ -185,7 +130,7 @@ def stats():
         return []
 
 # =========================
-# LINE
+# LINE CONFIG
 # =========================
 @app.post("/line/{camera}")
 def set_line(camera: str, data: dict):
@@ -203,7 +148,7 @@ def get_line(camera: str):
     return {"position": line_settings.get(camera, 0.5)}
 
 # =========================
-# DIRECTION
+# DIRECTION CONFIG
 # =========================
 @app.post("/direction/{camera}")
 def set_direction(camera: str, data: dict):
@@ -227,7 +172,7 @@ def get_direction(camera: str):
     return {"mode": direction_settings.get(camera, "NORMAL")}
 
 # =========================
-# STREAM
+# FRAME UPLOAD
 # =========================
 @app.post("/frame/{camera}")
 async def upload(camera: str, file: UploadFile = File(...)):
@@ -239,6 +184,9 @@ async def upload(camera: str, file: UploadFile = File(...)):
 
     return {"ok": True}
 
+# =========================
+# STREAM
+# =========================
 @app.get("/stream/{camera}")
 async def stream(camera: str, request: Request):
     camera = unquote(camera)
