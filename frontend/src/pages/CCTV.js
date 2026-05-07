@@ -2,10 +2,94 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import PropTypes from "prop-types";
 
+// =============================
+// COMPONENT: CAMERA CARD
+// =============================
+function CameraCard({ cam }) {
+  const CAM_URL = encodeURIComponent(cam.name);
+
+  const [line, setLine] = useState(50);
+  const [direction, setDirection] = useState("NORMAL");
+
+  // ambil config awal
+  useEffect(() => {
+    fetch(`http://127.0.0.1:8000/line/${CAM_URL}`)
+      .then((r) => r.json())
+      .then((j) => setLine((j.position || 0.5) * 100))
+      .catch(() => {});
+
+    fetch(`http://127.0.0.1:8000/direction/${CAM_URL}`)
+      .then((r) => r.json())
+      .then((j) => setDirection(j.mode || "NORMAL"))
+      .catch(() => {});
+  }, [CAM_URL]);
+
+  return (
+    <div style={videoContainer}>
+      <h4 style={{ marginBottom: "10px" }}>{cam.name}</h4>
+
+      <img
+  src={`http://127.0.0.1:8000/stream/${encodeURIComponent(cam.name)}`}
+  alt={cam.name}
+  style={video}
+/>
+
+      {/* CONTROL */}
+      <div style={controlBox}>
+        <p style={{ marginBottom: "5px" }}>Line Position</p>
+
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={line}
+          onChange={(e) => {
+            const val = Number(e.target.value);
+            setLine(val);
+
+            fetch(`http://127.0.0.1:8000/line/${CAM_URL}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                position: val / 100,
+              }),
+            }).catch(() => {});
+          }}
+        />
+
+        <p>{line}%</p>
+
+        <button
+          style={directionBtn}
+          onClick={() => {
+            const newDir = direction === "NORMAL" ? "REVERSE" : "NORMAL";
+
+            setDirection(newDir);
+
+            fetch(`http://127.0.0.1:8000/direction/${CAM_URL}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ mode: newDir }),
+            }).catch(() => {});
+          }}
+        >
+          {direction}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+CameraCard.propTypes = {
+  cam: PropTypes.object.isRequired,
+};
+
+// =============================
+// MAIN PAGE
+// =============================
 function CCTV() {
-  const CAMERA_NAME = "Camera 01";
-  const CAMERA_URL = encodeURIComponent(CAMERA_NAME);
   const [hoverBtn, setHoverBtn] = useState(false);
+  const [cameras, setCameras] = useState([]);
 
   const [data, setData] = useState({
     in: 0,
@@ -14,12 +98,15 @@ function CCTV() {
     no_helmet: 0,
   });
 
-  const [linePosition, setLinePosition] = useState(50);
-  const [direction, setDirection] = useState("NORMAL");
+  // ambil list kamera
+  useEffect(() => {
+    fetch("http://127.0.0.1:8000/cameras")
+      .then((res) => res.json())
+      .then((data) => setCameras(data))
+      .catch(() => {});
+  }, []);
 
-  // =============================
-  // FETCH COUNTER (REALTIME)
-  // =============================
+  // summary global
   useEffect(() => {
     const t = setInterval(() => {
       fetch("http://127.0.0.1:8000/summary")
@@ -38,69 +125,10 @@ function CCTV() {
     return () => clearInterval(t);
   }, []);
 
-  // =============================
-  // FETCH CONFIG AWAL (SYNC)
-  // =============================
-  useEffect(() => {
-    // line
-    fetch(`http://127.0.0.1:8000/line/${CAMERA_URL}`)
-      .then((r) => r.json())
-      .then((j) => {
-        setLinePosition((j.position || 0.5) * 100);
-      })
-      .catch(() => {});
-
-    // direction
-    fetch(`http://127.0.0.1:8000/direction/${CAMERA_URL}`)
-      .then((r) => r.json())
-      .then((j) => {
-        setDirection(j.mode || "NORMAL");
-      })
-      .catch(() => {});
-  }, []);
-
-  // =============================
-  // SEND LINE (DEBOUNCE)
-  // =============================
-  useEffect(() => {
-    const timeout = setTimeout(() => {
-      fetch(`http://127.0.0.1:8000/line/${CAMERA_URL}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          position: linePosition / 100,
-        }),
-      }).catch(() => {});
-    }, 200);
-
-    return () => clearTimeout(timeout);
-  }, [linePosition]);
-
-  // =============================
-  // HANDLE DIRECTION (INSTANT)
-  // =============================
-  const toggleDirection = () => {
-    const newDir = direction === "NORMAL" ? "REVERSE" : "NORMAL";
-
-    setDirection(newDir);
-
-    fetch(`http://127.0.0.1:8000/direction/${CAMERA_URL}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        mode: newDir,
-      }),
-    }).catch(() => {});
-  };
-
   return (
     <div style={wrapper}>
+      {/* HEADER */}
       <div style={header}>
-        {/* tombol kiri */}
         <Link to="/">
           <button
             style={{
@@ -116,39 +144,14 @@ function CCTV() {
           </button>
         </Link>
 
-        {/* judul tengah */}
         <h1 style={titleCenter}>CCTV Monitoring</h1>
       </div>
 
-      {/* CCTV + CONTROL */}
-      <div style={mainContent}>
-        {/* CCTV */}
-        <div style={videoContainer}>
-          <img
-            src={`http://127.0.0.1:8000/stream/${CAMERA_URL}`}
-            alt="CCTV"
-            style={video}
-          />
-        </div>
-
-        {/* CONTROL */}
-        <div style={controlBox}>
-          <h4>Line Position</h4>
-
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value={linePosition}
-            onChange={(e) => setLinePosition(Number(e.target.value))}
-          />
-
-          <p>{linePosition}%</p>
-
-          <button style={directionBtn} onClick={toggleDirection}>
-            {direction}
-          </button>
-        </div>
+      {/* MULTI CAMERA */}
+      <div style={grid}>
+        {cameras.map((cam) => (
+          <CameraCard key={cam.name} cam={cam} />
+        ))}
       </div>
 
       {/* DATA */}
@@ -162,6 +165,7 @@ function CCTV() {
   );
 }
 
+// =============================
 function Stat({ title, value }) {
   const getColor = () => {
     if (title === "IN") return "#22c55e";
@@ -184,6 +188,8 @@ Stat.propTypes = {
   value: PropTypes.number.isRequired,
 };
 
+// =============================
+// STYLE
 // =============================
 const wrapper = {
   minHeight: "100vh",
@@ -208,27 +214,36 @@ const titleCenter = {
   fontWeight: "bold",
 };
 
+const grid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(400px, 1fr))",
+  gap: "20px",
+};
+
 const videoContainer = {
   background: "#020617",
   padding: "10px",
   borderRadius: "12px",
   border: "1px solid #1e293b",
-  width: "100%",
-  maxWidth: "1200px",
+  
 };
 
 const video = {
   width: "100%",
-  maxWidth: "900  px",
+  maxWidth: "800px",
+  aspectRatio: "16/9",
+  objectFit: "cover",
   borderRadius: "8px",
+  margin: "0 auto", // 🔥 tambahan penting
+  display: "block",
 };
 
 const controlBox = {
+  marginTop: "10px",
   background: "#020617",
-  padding: "20px",
-  borderRadius: "12px",
+  padding: "15px",
+  borderRadius: "10px",
   border: "1px solid #1e293b",
-  minWidth: "250px",
 };
 
 const directionBtn = {
@@ -239,6 +254,7 @@ const directionBtn = {
   borderRadius: "6px",
   color: "white",
   cursor: "pointer",
+  width: "100%",
 };
 
 const boxContainer = {
@@ -261,6 +277,7 @@ const statTitle = {
   color: "#94a3b8",
   marginBottom: "5px",
 };
+
 const statValue = {
   fontSize: "32px",
   fontWeight: "bold",
@@ -274,14 +291,6 @@ const btn = {
   borderRadius: "8px",
   color: "white",
   cursor: "pointer",
-};
-
-const mainContent = {
-  display: "flex",
-  justifyContent: "center",
-  alignItems: "flex-start",
-  gap: "30px",
-  flexWrap: "wrap",
 };
 
 export default CCTV;

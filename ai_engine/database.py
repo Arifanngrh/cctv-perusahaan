@@ -1,9 +1,8 @@
 import psycopg2
 from datetime import datetime, date
 
-
 # =========================
-# KONEKSI DATABASE
+# KONEKSI
 # =========================
 def connect():
     return psycopg2.connect(
@@ -14,142 +13,134 @@ def connect():
         port="5432"
     )
 
-
 # =========================
-# AUTO CREATE TABLE (ANTI ERROR)
+# INIT TABLE
 # =========================
 def init_db():
     conn = connect()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    # 🔥 detections
-    cursor.execute("""
+    # DETECTIONS
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS detections (
         id SERIAL PRIMARY KEY,
         camera TEXT,
         label TEXT,
         confidence FLOAT,
         direction TEXT,
-        created_at TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
 
-    # 🔥 daily counter
-    cursor.execute("""
+    # DAILY COUNTER (PER CAMERA)
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS daily_counter (
-        id SERIAL PRIMARY KEY,
         camera TEXT,
         counter_date DATE,
         total_in INTEGER DEFAULT 0,
         total_out INTEGER DEFAULT 0,
-        UNIQUE(camera, counter_date)
+        PRIMARY KEY (camera, counter_date)
     );
     """)
 
     conn.commit()
-    cursor.close()
+    cur.close()
     conn.close()
 
-
 # =========================
-# SIMPAN RAW DETECTION
+# SAVE DETECTION
 # =========================
 def save_detection(camera, label, confidence, direction):
     conn = connect()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    cursor.execute("""
+    cur.execute("""
         INSERT INTO detections (camera, label, confidence, direction, created_at)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (camera, label, confidence, direction, datetime.now()))
+        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+    """, (camera, label, confidence, direction))
 
     conn.commit()
-    cursor.close()
+    cur.close()
     conn.close()
 
-
 # =========================
-# UPDATE DAILY COUNTER
+# UPDATE COUNTER (ANTI ERROR)
 # =========================
 def update_daily_counter(camera, people_in, people_out):
-
     today = date.today()
 
     conn = connect()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    cursor.execute("""
+    cur.execute("""
         INSERT INTO daily_counter (camera, counter_date, total_in, total_out)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (camera, counter_date)
         DO UPDATE SET
-            total_in = daily_counter.total_in + EXCLUDED.total_in,
-            total_out = daily_counter.total_out + EXCLUDED.total_out
-    """, (camera, today, people_in, people_out))
+            total_in = daily_counter.total_in + %s,
+            total_out = daily_counter.total_out + %s
+    """, (camera, today, people_in, people_out, people_in, people_out))
 
     conn.commit()
-    cursor.close()
+    cur.close()
     conn.close()
 
-
 # =========================
-# GET SUMMARY HARI INI
+# SUMMARY GLOBAL (SEMUA CAMERA)
 # =========================
 def get_summary_today():
     today = date.today()
 
     conn = connect()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    cursor.execute("""
+    cur.execute("""
         SELECT 
-            COALESCE(SUM(total_in), 0),
-            COALESCE(SUM(total_out), 0)
+            COALESCE(SUM(total_in),0),
+            COALESCE(SUM(total_out),0)
         FROM daily_counter
         WHERE counter_date = %s
     """, (today,))
 
-    result = cursor.fetchone()
+    res = cur.fetchone()
 
-    cursor.close()
+    cur.close()
     conn.close()
 
     return {
-        "total_in": result[0],
-        "total_out": result[1]
+        "total_in": res[0],
+        "total_out": res[1]
     }
 
-
 # =========================
-# GET HELMET STATS
+# HELMET STATS
 # =========================
 def get_helmet_stats_today():
     today = date.today()
 
     conn = connect()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    cursor.execute("""
+    cur.execute("""
         SELECT
-            COALESCE(SUM(CASE WHEN label = 'helmet' THEN 1 ELSE 0 END),0),
-            COALESCE(SUM(CASE WHEN label = 'no_helmet' THEN 1 ELSE 0 END),0)
+            COUNT(*) FILTER (WHERE label='helmet'),
+            COUNT(*) FILTER (WHERE label='no_helmet')
         FROM detections
         WHERE DATE(created_at) = %s
     """, (today,))
 
-    result = cursor.fetchone()
+    res = cur.fetchone()
 
-    cursor.close()
+    cur.close()
     conn.close()
 
     return {
-        "helmet": result[0],
-        "no_helmet": result[1]
+        "helmet": res[0],
+        "no_helmet": res[1]
     }
 
-
 # =========================
-# DASHBOARD
+# DASHBOARD FINAL
 # =========================
 def get_dashboard():
     summary = get_summary_today()
@@ -162,9 +153,8 @@ def get_dashboard():
         "no_helmet": helmet["no_helmet"]
     }
 
-
 # =========================
-# INIT AUTO
+# INIT
 # =========================
 if __name__ == "__main__":
     init_db()
