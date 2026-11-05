@@ -130,6 +130,7 @@ def run_camera(camera):
                     f"{API_URL}/direction/{cam}", timeout=2
                 ).json().get("mode", "NORMAL")
 
+
             except Exception as e:
                 print("⚠ CONFIG ERROR:", e)
 

@@ -36,7 +36,7 @@ frames = {}
 def cams():
     return load_cameras()
 
-# ✅ FINAL SUMMARY
+# FINAL SUMMARY
 @app.get("/summary")
 def summary():
     conn = get_conn()
